@@ -34,6 +34,7 @@ claudebox prompt "explain how DNS works"    # run a single prompt
 claudebox prompt --json "explain DNS"       # full JSON output
 claudebox prompt --verbose "explain DNS"    # container logs + output
 claudebox server                            # start the HTTP API server
+claudebox server --openai                   # start with OpenAI-compatible API
 claudebox stop                              # stop the server
 claudebox logs                              # view server logs
 claudebox status                            # check if server is running
@@ -51,6 +52,7 @@ Works on macOS and Linux. Handles authentication automatically and refreshes exp
 | `CLAUDEBOX_IMAGE` | `ghcr.io/armanjr/claudebox:latest` | Docker image |
 | `CLAUDEBOX_NAME` | `claudebox` | Container name |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | Skip auto-detection, use this token directly |
+| `CLAUDEBOX_API_KEY` | — | API key for `/v1/*` endpoints (used with `--openai`) |
 
 ## Use as a service
 
@@ -114,6 +116,72 @@ Returns `{"status": "ok", "activeRequests": 0}`.
 |---|---|---|
 | `PORT` | `3000` | Server listen port |
 | `MAX_CONCURRENT` | `4` | Max parallel Claude processes |
+| `OPENAI_COMPAT` | — | Set to `1` to enable `/v1/*` routes (set automatically by `--openai`) |
+| `CLAUDEBOX_API_KEY` | — | If set, all `/v1/*` requests require `Authorization: Bearer <key>` |
+
+### OpenAI-compatible API
+
+Start the server with `--openai` (CLI) or set `OPENAI_COMPAT=1` (Docker) to expose `/v1/chat/completions` and `/v1/models`. This lets you use claudebox with any OpenAI-compatible client.
+
+```bash
+# CLI
+claudebox server --openai
+
+# Docker Compose — add to environment
+OPENAI_COMPAT=1
+```
+
+#### `POST /v1/chat/completions`
+
+Accepts the standard OpenAI chat completions request format and translates it to Claude Code invocations.
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sonnet",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant"},
+      {"role": "user", "content": "Explain DNS in one sentence"}
+    ]
+  }'
+```
+
+Returns a standard OpenAI-shaped response:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "sonnet",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "..."},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+}
+```
+
+**Supported features:**
+
+| Feature | How it maps |
+|---|---|
+| `messages[role=system]` | Concatenated into `--system-prompt` |
+| Multi-turn conversation | Serialized into structured prompt with history |
+| `model` | Passed through to Claude (`sonnet`, `opus`, `haiku`, or full model IDs) |
+| `response_format` (`json_schema` / `json_object`) | Injected into prompt + validated; retries once on failure |
+| Base64 images (`data:image/...;base64,...`) | Decoded to temp files, read by Claude's Read tool |
+
+**Not supported:** streaming, function calling / tools, external image URLs, `temperature` / `top_p`, `n > 1`.
+
+#### `GET /v1/models`
+
+Lists available Claude models.
+
+#### Authentication
+
+If `CLAUDEBOX_API_KEY` is set, all `/v1/*` requests must include `Authorization: Bearer <key>`. The existing `/prompt` and `/health` endpoints are unaffected.
 
 ## How It Works
 

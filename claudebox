@@ -131,6 +131,15 @@ preflight() {
 # ---------------------------------------------------------------------------
 
 cmd_server() {
+    local openai=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --openai) openai=true ;;
+            *)        die "Unknown flag: $1" ;;
+        esac
+        shift
+    done
+
     preflight
     build_auth_args
 
@@ -140,16 +149,26 @@ cmd_server() {
         docker rm -f "$CLAUDEBOX_NAME" >/dev/null 2>&1 || true
     fi
 
+    local extra_env=()
+    if "$openai"; then
+        extra_env+=(-e "OPENAI_COMPAT=1")
+        [ -n "${CLAUDEBOX_API_KEY:-}" ] && extra_env+=(-e "CLAUDEBOX_API_KEY=${CLAUDEBOX_API_KEY}")
+    fi
+
     local container_id
     container_id=$(docker run -d \
         --name "$CLAUDEBOX_NAME" \
         --cap-add NET_ADMIN \
         -p "${CLAUDEBOX_PORT}:3000" \
         "${DOCKER_AUTH_ARGS[@]}" \
+        "${extra_env[@]+"${extra_env[@]}"}" \
         "$CLAUDEBOX_IMAGE")
 
     log "Server started on port ${CLAUDEBOX_PORT} (container: ${container_id:0:12})"
     log "Health: curl http://localhost:${CLAUDEBOX_PORT}/health"
+    if "$openai"; then
+        log "OpenAI: http://localhost:${CLAUDEBOX_PORT}/v1/chat/completions"
+    fi
     log "Stop:   claudebox stop"
 }
 
@@ -251,13 +270,16 @@ cmd_help() {
 claudebox ${CLAUDEBOX_VERSION} — sandboxed Claude Code agents
 
 Usage:
-  claudebox server              Start the HTTP API server
+  claudebox server [--openai]   Start the HTTP API server
   claudebox prompt "text"       Run a single prompt and exit
   claudebox stop                Stop the running server
   claudebox logs [--follow]     Show container logs
   claudebox status              Check if server is running
   claudebox update              Update claudebox CLI
   claudebox version             Show version
+
+Server flags:
+  --openai                      Enable OpenAI-compatible /v1/* endpoints
 
 Prompt flags:
   --json                        Output full JSON instead of plain text
@@ -268,6 +290,7 @@ Environment variables:
   CLAUDEBOX_IMAGE               Docker image (default: ghcr.io/armanjr/claudebox:latest)
   CLAUDEBOX_NAME                Container name (default: claudebox)
   CLAUDE_CODE_OAUTH_TOKEN       Skip auto-detection, use this token directly
+  CLAUDEBOX_API_KEY             API key for /v1/* endpoints (optional, --openai)
 
 Examples:
   claudebox server
