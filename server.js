@@ -9,11 +9,6 @@ const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "4", 10);
 const OPENAI_COMPAT = process.env.OPENAI_COMPAT === "1";
 const CLAUDEBOX_API_KEY = process.env.CLAUDEBOX_API_KEY || "";
 
-let Ajv;
-if (OPENAI_COMPAT) {
-  Ajv = require("ajv");
-}
-
 let activeRequests = 0;
 
 // ---------------------------------------------------------------------------
@@ -65,6 +60,8 @@ function runClaude(prompt, options = {}) {
       args.push("--system-prompt", options.systemPrompt);
     if (options.appendSystemPrompt)
       args.push("--append-system-prompt", options.appendSystemPrompt);
+    if (options.jsonSchema)
+      args.push("--json-schema", options.jsonSchema);
     if (options.allowedTools)
       args.push("--allowedTools", ...options.allowedTools);
 
@@ -224,92 +221,32 @@ function parseOpenAIRequest(body) {
   };
 }
 
-function buildStructuredOutputInstructions(responseFormat) {
+function getJsonSchemaString(responseFormat) {
   if (!responseFormat) return null;
 
+  let schema;
   if (responseFormat.type === "json_schema") {
-    const schema =
-      responseFormat.json_schema?.schema || responseFormat.schema;
+    schema = responseFormat.json_schema?.schema || responseFormat.schema;
     if (!schema) return null;
-    return [
-      "CRITICAL INSTRUCTION: Your final response must be ONLY a valid JSON object",
-      "conforming exactly to the following schema. No markdown fences, no explanation,",
-      "no surrounding text. Output raw JSON only.",
-      "",
-      "JSON Schema:",
-      JSON.stringify(schema, null, 2),
-    ].join("\n");
+  } else if (responseFormat.type === "json_object") {
+    schema = { type: "object" };
+  } else {
+    return null;
   }
 
-  if (responseFormat.type === "json_object") {
-    return [
-      "CRITICAL INSTRUCTION: Your final response must be ONLY a valid JSON object.",
-      "No markdown fences, no explanation, no surrounding text. Output raw JSON only.",
-    ].join("\n");
-  }
-
-  return null;
-}
-
-function extractJsonFromResponse(text) {
-  const trimmed = text.trim();
-
-  // Direct parse
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // fall through
-  }
-
-  // Extract from markdown code fences
-  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenceMatch) {
-    try {
-      return JSON.parse(fenceMatch[1].trim());
-    } catch {
-      // fall through
-    }
-  }
-
-  // Find first JSON object or array
-  const jsonMatch = trimmed.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[1]);
-    } catch {
-      // fall through
-    }
-  }
-
-  return null;
-}
-
-function validateAgainstSchema(data, schema) {
-  const ajv = new Ajv({ allErrors: true });
-  const validate = ajv.compile(schema);
-  const valid = validate(data);
-
-  if (!valid) {
-    const errors = validate.errors
-      .map((e) => `${e.instancePath || "/"}: ${e.message}`)
-      .join("; ");
-    return { valid: false, error: errors };
-  }
-  return { valid: true };
-}
-
-function getJsonSchema(responseFormat) {
-  if (responseFormat?.type !== "json_schema") return null;
-  return responseFormat.json_schema?.schema || responseFormat.schema || null;
+  return JSON.stringify(schema);
 }
 
 function parseClaudeOutput(raw) {
   try {
     const parsed = JSON.parse(raw);
-    return {
-      text: parsed.result || raw,
-      usage: parsed.usage || {},
-    };
+    let text;
+    if (parsed.structured_output !== undefined) {
+      text = JSON.stringify(parsed.structured_output);
+    } else {
+      text = parsed.result || raw;
+    }
+    return { text, usage: parsed.usage || {} };
   } catch {
     return { text: raw, usage: {} };
   }
@@ -334,49 +271,6 @@ function toOpenAIResponse(resultText, model, usage) {
       total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
     },
   };
-}
-
-async function attemptRepair(originalPrompt, options, previousOutput, validationError, responseFormat) {
-  const repairPrompt = [
-    "Your previous response did not conform to the required JSON schema.",
-    "",
-    "Original request:",
-    originalPrompt,
-    "",
-    "Your output was:",
-    previousOutput,
-    "",
-    "Validation error:",
-    validationError,
-    "",
-    "Respond ONLY with a corrected valid JSON object matching the schema. No explanation.",
-  ].join("\n");
-
-  log("info", "openai compat: attempt 2 (repair)");
-
-  try {
-    const raw = await runClaude(repairPrompt, options);
-    const { text } = parseClaudeOutput(raw);
-    const jsonData = extractJsonFromResponse(text);
-
-    if (jsonData === null) {
-      return { error: "Failed to produce valid structured output after 2 attempts" };
-    }
-
-    const schema = getJsonSchema(responseFormat);
-    if (schema) {
-      const validation = validateAgainstSchema(jsonData, schema);
-      if (!validation.valid) {
-        return {
-          error: `Failed to produce valid structured output after 2 attempts: ${validation.error}`,
-        };
-      }
-    }
-
-    return { text: JSON.stringify(jsonData) };
-  } catch (err) {
-    return { error: `Repair attempt failed: ${err.message}` };
-  }
 }
 
 async function handleChatCompletions(req, res) {
@@ -436,64 +330,14 @@ async function handleChatCompletions(req, res) {
     if (parsed.systemPrompt) options.systemPrompt = parsed.systemPrompt;
     if (parsed.model) options.model = parsed.model;
 
-    const structuredInstructions = buildStructuredOutputInstructions(parsed.responseFormat);
-    if (structuredInstructions) {
-      options.appendSystemPrompt = structuredInstructions;
-    }
+    const jsonSchema = getJsonSchemaString(parsed.responseFormat);
+    if (jsonSchema) options.jsonSchema = jsonSchema;
 
-    const needsJsonValidation =
-      parsed.responseFormat &&
-      (parsed.responseFormat.type === "json_schema" ||
-        parsed.responseFormat.type === "json_object");
-    const jsonSchema = getJsonSchema(parsed.responseFormat);
-
-    // --- Attempt 1 ---
-    log("info", "openai compat: attempt 1", { model: parsed.model });
+    log("info", "openai compat: spawning claude", { model: parsed.model, hasSchema: !!jsonSchema });
     const raw = await runClaude(parsed.prompt, options);
     const { text: resultText, usage } = parseClaudeOutput(raw);
-    let finalText = resultText;
 
-    if (needsJsonValidation) {
-      const jsonData = extractJsonFromResponse(resultText);
-
-      if (jsonData === null) {
-        log("warn", "openai compat: attempt 1 failed JSON parse, retrying");
-        const repair = await attemptRepair(
-          parsed.prompt, options, resultText, "Response is not valid JSON", parsed.responseFormat
-        );
-        if (repair.error) {
-          sendJSON(res, 422, {
-            error: { message: repair.error, type: "invalid_request_error" },
-          });
-          return;
-        }
-        finalText = repair.text;
-      } else if (jsonSchema) {
-        const validation = validateAgainstSchema(jsonData, jsonSchema);
-        if (!validation.valid) {
-          log("warn", "openai compat: attempt 1 failed schema validation", {
-            error: validation.error,
-          });
-          const repair = await attemptRepair(
-            parsed.prompt, options, resultText, validation.error, parsed.responseFormat
-          );
-          if (repair.error) {
-            sendJSON(res, 422, {
-              error: { message: repair.error, type: "invalid_request_error" },
-            });
-            return;
-          }
-          finalText = repair.text;
-        } else {
-          finalText = JSON.stringify(jsonData);
-        }
-      } else {
-        // json_object — valid JSON is sufficient
-        finalText = JSON.stringify(jsonData);
-      }
-    }
-
-    sendJSON(res, 200, toOpenAIResponse(finalText, parsed.model, usage));
+    sendJSON(res, 200, toOpenAIResponse(resultText, parsed.model, usage));
   } catch (err) {
     log("error", "openai compat error", { error: err.message });
     sendJSON(res, 500, {

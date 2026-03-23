@@ -15,8 +15,6 @@ RUN useradd -m -s /bin/bash claude && \
 # Create entrypoint script to setup firewall rules
 COPY entrypoint.sh /entrypoint.sh
 COPY allowed-domains.txt /etc/allowed-domains.txt
-COPY package.json /opt/claudebox/package.json
-RUN cd /opt/claudebox && npm install --omit=dev 2>&1 | tail -1
 COPY server.js /opt/claudebox/server.js
 RUN chmod 755 /entrypoint.sh
 

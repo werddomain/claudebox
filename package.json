@@ -1,7 +1,0 @@
-{
-  "name": "claudebox-server",
-  "private": true,
-  "dependencies": {
-    "ajv": "^8.17.1"
-  }
-}
