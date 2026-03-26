@@ -418,7 +418,7 @@ async function handleCreateSession(req, res) {
     return;
   }
 
-  const provider = body.provider || (GeminiProvider.matchesModel(body.model) ? "gemini" : "claude");
+  const provider = body.provider || resolveProvider(body.model).name;
 
   // Check Gemini configuration if needed
   if (provider === "gemini" && !geminiProvider.isConfigured()) {

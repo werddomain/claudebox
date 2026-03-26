@@ -7,6 +7,7 @@ const { BaseProvider } = require("./base");
 
 const GEMINI_API_BASE = "generativelanguage.googleapis.com";
 const GEMINI_API_VERSION = "v1beta";
+const MAX_ERROR_SNIPPET_LENGTH = 200;
 
 class GeminiProvider extends BaseProvider {
   constructor() {
@@ -137,7 +138,7 @@ class GeminiProvider extends BaseProvider {
           } catch {
             reject(
               new Error(
-                `Failed to parse Gemini response (${res.statusCode}): ${data.slice(0, 200)}`
+                `Failed to parse Gemini response (${res.statusCode}): ${data.slice(0, MAX_ERROR_SNIPPET_LENGTH)}`
               )
             );
           }
