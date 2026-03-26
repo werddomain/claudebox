@@ -4,7 +4,7 @@
 # Auth: resolve CLAUDE_CODE_OAUTH_TOKEN
 #   1. Already set via env_file / environment  → use it (macOS path)
 #   2. Mounted credentials file exists          → extract from it (Linux path)
-#   3. Neither                                  → fail with instructions
+#   3. Neither                                  → warn (Gemini-only mode may still work)
 # ---------------------------------------------------------------------------
 CREDENTIALS_MOUNT="/run/claude-credentials"
 
@@ -16,17 +16,33 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
             const token = creds.claudeAiOauth && creds.claudeAiOauth.accessToken;
             if (!token) { console.error('No accessToken found in credentials file'); process.exit(1); }
             process.stdout.write(token);
-        ") || { echo "ERROR: Failed to parse credentials file." >&2; exit 1; }
-        export CLAUDE_CODE_OAUTH_TOKEN
+        ") || { echo "WARNING: Failed to parse credentials file. Claude provider will be unavailable." >&2; }
+        if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            export CLAUDE_CODE_OAUTH_TOKEN
+        fi
     else
-        echo "ERROR: No authentication found." >&2
-        echo "" >&2
-        echo "  Linux users:  credentials are mounted automatically if you have" >&2
-        echo "                run 'claude login' on this machine." >&2
-        echo "" >&2
-        echo "  macOS users:  run ./setup-auth.sh once (Keychain can't be mounted)." >&2
-        exit 1
+        if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "ERROR: No authentication found." >&2
+            echo "" >&2
+            echo "  For Claude: Set CLAUDE_CODE_OAUTH_TOKEN or mount credentials." >&2
+            echo "  For Gemini: Set GEMINI_API_KEY environment variable." >&2
+            echo "" >&2
+            echo "  Linux users:  credentials are mounted automatically if you have" >&2
+            echo "                run 'claude login' on this machine." >&2
+            echo "" >&2
+            echo "  macOS users:  run ./setup-auth.sh once (Keychain can't be mounted)." >&2
+            exit 1
+        else
+            echo "No Claude credentials found. Running in Gemini-only mode." >&2
+        fi
     fi
+fi
+
+# Log Gemini API key status
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+    echo "Gemini API key detected. Gemini provider will be available." >&2
+else
+    echo "No Gemini API key set. Gemini provider will be unavailable." >&2
 fi
 
 ALLOWED_DOMAINS_FILE="/etc/allowed-domains.txt"
