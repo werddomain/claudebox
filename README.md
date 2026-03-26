@@ -115,9 +115,12 @@ Returns `{"status": "ok", "activeRequests": 0}`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | Server listen port |
-| `MAX_CONCURRENT` | `4` | Max parallel Claude processes |
+| `MAX_CONCURRENT` | `4` | Max parallel Claude/Gemini processes |
 | `OPENAI_COMPAT` | — | Set to `1` to enable `/v1/*` routes (set automatically by `--openai`) |
 | `CLAUDEBOX_API_KEY` | — | If set, all `/v1/*` requests require `Authorization: Bearer <key>` |
+| `GEMINI_API_KEY` | — | Google Gemini API key (enables Gemini models) |
+| `SESSION_TTL_MINUTES` | `60` | Session expiration time in minutes |
+| `MAX_SESSIONS` | `100` | Maximum number of active sessions |
 
 ### OpenAI-compatible API
 
@@ -177,15 +180,87 @@ Returns a standard OpenAI-shaped response:
 
 #### `GET /v1/models`
 
-Lists available Claude models.
+Lists available models (Claude models always, Gemini models when `GEMINI_API_KEY` is configured).
 
 #### Authentication
 
 If `CLAUDEBOX_API_KEY` is set, all `/v1/*` requests must include `Authorization: Bearer <key>`. The existing `/prompt` and `/health` endpoints are unaffected.
 
+### Gemini Support
+
+claudebox supports Google Gemini as an alternative provider. Set `GEMINI_API_KEY` to enable Gemini models. The provider is automatically selected based on the model name prefix:
+
+| Model prefix | Provider |
+|---|---|
+| `claude-*`, `sonnet`, `opus`, `haiku` | Claude (CLI subprocess) |
+| `gemini-*` | Gemini (REST API) |
+
+Gemini models work with all existing endpoints (`/prompt`, `/v1/chat/completions`) and the new Session API.
+
+**Available Gemini models:** `gemini-2.0-flash`, `gemini-2.0-pro`, `gemini-1.5-flash`, `gemini-1.5-pro`
+
+### Session API
+
+The Session API provides stateful multi-turn conversations with automatic history management. Sessions work with both Claude and Gemini providers.
+
+#### `POST /sessions` — Create a new session
+
+```bash
+curl -X POST http://localhost:3000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "gemini",
+    "model": "gemini-2.0-flash",
+    "system_prompt": "You are a helpful assistant"
+  }'
+```
+
+#### `GET /sessions` — List active sessions
+
+```bash
+curl http://localhost:3000/sessions
+```
+
+#### `GET /sessions/:id` — Get session details
+
+```bash
+curl http://localhost:3000/sessions/session-abc123
+```
+
+#### `POST /sessions/:id/messages` — Send a message
+
+```bash
+curl -X POST http://localhost:3000/sessions/session-abc123/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Explain how DNS works"}'
+```
+
+Returns:
+
+```json
+{
+  "id": "msg-...",
+  "session_id": "session-abc123",
+  "role": "assistant",
+  "content": "DNS (Domain Name System) is...",
+  "model": "gemini-2.0-flash",
+  "provider": "gemini",
+  "usage": {"input_tokens": 100, "output_tokens": 200, "total_tokens": 300},
+  "created_at": "2026-03-26T20:00:00.000Z"
+}
+```
+
+#### `DELETE /sessions/:id` — Delete a session
+
+```bash
+curl -X DELETE http://localhost:3000/sessions/session-abc123
+```
+
+Sessions expire automatically after `SESSION_TTL_MINUTES` (default: 60 minutes) and are limited to `MAX_SESSIONS` (default: 100).
+
 ## How It Works
 
-**Network isolation** — iptables firewall blocks all outbound traffic except Anthropic API domains (baked into the image). To allow additional domains, mount a custom allowlist:
+**Network isolation** — iptables firewall blocks all outbound traffic except Anthropic API domains and Google Gemini API (baked into the image). To allow additional domains, mount a custom allowlist:
 
 ```bash
 -v /path/to/allowed-domains.txt:/etc/allowed-domains.txt:ro

@@ -319,3 +319,55 @@ L'endpoint OpenAI-compatible `/v1/chat/completions` est mis à jour pour support
 - **Sessions en mémoire** : Les sessions sont perdues au redémarrage du conteneur (pas de persistance disque)
 - **Pas d'outils Gemini** : Les outils Claude (Read, Edit, Bash) ne sont pas disponibles pour Gemini
 - **Pas de Live API** : L'intégration utilise l'API REST standard, pas la Live API WebSocket de Gemini
+
+---
+
+## 9. Rapport d'Implémentation
+
+### 9.1 Ce qui a été fait
+
+| Étape | Statut | Description |
+|-------|--------|-------------|
+| Analyse & Document | ✅ Terminé | Document `gemini-support.md` créé avec l'architecture proposée |
+| `providers/base.js` | ✅ Terminé | Interface abstraite BaseProvider avec méthodes `invoke()` et `listModels()` |
+| `providers/claude.js` | ✅ Terminé | Refactoring de `runClaude()` en ClaudeProvider avec parsing de réponse intégré |
+| `providers/gemini.js` | ✅ Terminé | Client HTTP Gemini utilisant le module `https` natif (zero dependencies) |
+| `sessions/session-store.js` | ✅ Terminé | Store de sessions en mémoire avec TTL, éviction, et cleanup automatique |
+| `server.js` refactoring | ✅ Terminé | Routage par provider, endpoints sessions, backward compatibility `/prompt` |
+| `allowed-domains.txt` | ✅ Terminé | Ajout `generativelanguage.googleapis.com` |
+| `entrypoint.sh` | ✅ Terminé | Support mode Gemini-only, logging de configuration |
+| `README.md` | ✅ Terminé | Documentation Gemini, Session API, variables d'environnement |
+
+### 9.2 Obstacles Rencontrés
+
+1. **Architecture monolithique existante** : Le `server.js` original mélangeait toute la logique dans un seul fichier. Il a fallu extraire proprement les responsabilités sans casser la rétro-compatibilité du endpoint `/prompt`.
+
+2. **Zero-dependency constraint** : Le projet n'utilise aucune dépendance npm. Le client HTTP Gemini a dû être implémenté avec le module `https` natif de Node.js au lieu d'utiliser un SDK Google.
+
+3. **Rétro-compatibilité /prompt** : L'endpoint `/prompt` retournait le JSON brut de Claude CLI. Pour Gemini, un format compatible a été créé via `runClaude()` qui formatte la réponse Gemini dans un format similaire.
+
+### 9.3 Recommandations
+
+1. **Tests automatisés** : Le projet n'a actuellement aucun test automatisé. Il est fortement recommandé d'ajouter des tests unitaires pour les providers et le session store.
+
+2. **Persistance des sessions** : Les sessions sont actuellement en mémoire et perdues au redémarrage. Pour la production, envisager une persistance sur disque (fichier JSON) ou Redis.
+
+3. **Streaming Gemini** : L'API Gemini supporte le streaming via `streamGenerateContent`. Cela pourrait être ajouté dans une version future.
+
+4. **Rate limiting par provider** : Actuellement, le `MAX_CONCURRENT` est global. Il serait utile d'avoir des limites par provider.
+
+5. **Validation des clés API** : Un health check pourrait vérifier la validité de `GEMINI_API_KEY` au démarrage.
+
+6. **Live API Gemini** : Pour les cas d'usage temps réel, l'intégration de la Live API (WebSocket) de Gemini pourrait être envisagée.
+
+### 9.4 Tâches Restantes
+
+| Tâche | Priorité | Description |
+|-------|----------|-------------|
+| Tests unitaires providers | Haute | Tester `ClaudeProvider` et `GeminiProvider` |
+| Tests session store | Haute | Tester création, TTL, éviction |
+| Tests intégration endpoints | Moyenne | Tester les endpoints `/sessions/*` |
+| Streaming support | Moyenne | Ajouter le support streaming pour Gemini |
+| Session persistence | Basse | Persister les sessions sur disque |
+| Docker Compose update | Basse | Ajouter `GEMINI_API_KEY` dans docker-compose.yml |
+| Rate limiting par provider | Basse | Limiter les requêtes par provider individuellement |
